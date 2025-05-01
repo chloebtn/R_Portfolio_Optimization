@@ -1,0 +1,246 @@
+---
+title: "Portfolio Optimization"
+author: "Chloe Bouton"
+date: "2025-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Load Required Packages
+
+```{r}
+library(quantmod)                    
+library(PerformanceAnalytics) 
+library(PortfolioAnalytics)   
+library(ROI)                 
+library(ROI.plugin.quadprog)  
+library(ROI.plugin.glpk)
+library(ROI.plugin.symphony)
+library(CVXR)
+library(corrplot)  
+```
+
+- **quantmod** for financial data retrieval
+- **PerformanceAnalytics** for performance measurement
+- **PortfolioAnalytics** for portfolio optimization framework
+- **ROI.plugin.quadprog** for quadratic programming solver
+
+## Data Acquisition and Preprocessing
+
+``` {r}
+# Define ticker symbols
+tickers <- c("AAPL", "MSFT", "GOOGL", "JPM", "XOM")
+
+# Get 5 years of monthly price data
+getSymbols(tickers, 
+           src = "yahoo", 
+           from = Sys.Date() - 365*5)
+
+prices <- do.call(merge, lapply(tickers, function(sym) Ad(get(sym))))
+colnames(prices) <- tickers
+
+returns <- na.omit(Return.calculate(prices))
+```
+- **Data:** 5 years of monthly adjusted closing prices from Yahoo Finance.
+
+- **Returns:** Calculated as log returns, cleaned for NAs.
+
+
+## Performance Analysis and Risk Metrics
+
+```{r}
+# Performance summary
+charts.PerformanceSummary(returns, 
+                          main = "Daily Returns",
+                          legend.loc = "topleft")
+
+# Risk metrics
+table.Stats(returns)
+table.AnnualizedReturns(returns)
+table.DownsideRisk(returns)
+
+VaR(returns, p = 0.95, method = "historical")
+ES(returns, p = 0.95, method = "historical")
+```
+
+## Correlation Analysis
+
+```{r}
+# Correlation matrix
+cor_matrix <- cor(returns)
+corrplot::corrplot(cor_matrix, 
+                   method = "circle", 
+                   type = "upper")
+
+# Covariance matrix
+cov_matrix <- cov(returns)
+```
+**Microsoft**, **Google** and **Apple** are the assets with the highest correlation while **JPMorgan Chase & Co** and **Exxon Mobil Corp** have little to no correlation with other stocks. We observe that all chosen stocks have positive correlation, meaning they will tend to move together and not opposite to each others.
+
+
+## Portfolio Optimization Setup
+
+```{r}
+# Define Portfolio
+port_spec <- portfolio.spec(assets = colnames(returns))
+
+# Add constraints
+port_spec <- add.constraint(portfolio = port_spec, 
+                            type = "full_investment")
+
+port_spec <- add.constraint(portfolio = port_spec, 
+                            type = "long_only")
+
+# Add objectives
+port_spec <- add.objective(portfolio = port_spec, 
+                           type = "risk", 
+                           name = "StdDev")
+
+port_spec <- add.objective(portfolio = port_spec, 
+                           type = "return", 
+                           name = "mean")
+```
+
+## Optimization Results and Efficient Frontier
+
+```{r}
+# Optimization
+opt_result <- optimize.portfolio(R = returns, 
+                                 portfolio = port_spec, 
+                                 optimize_method = "ROI", 
+                                 trace = TRUE)
+
+opt_result
+chart.Weights(opt_result)
+
+# Equal-weight portfolio returns
+equal_weights <- rep(1 / ncol(returns), ncol(returns))
+ew_returns <- Return.portfolio(returns, 
+                               weights = equal_weights)
+
+# Optimized portfolio returns
+opt_weights <- extractWeights(opt_result)
+opt_returns <- Return.portfolio(returns, 
+                                weights = opt_weights)
+
+# Combine and plot
+combined <- merge.xts(ew_returns, opt_returns)
+colnames(combined) <- c("Equal Weight", "Optimized")
+charts.PerformanceSummary(combined, main = "Performance: Equal Weight vs Optimized")
+
+
+# Efficient frontier
+ef <- create.EfficientFrontier(returns, 
+                               port_spec, 
+                               type = "mean-StdDev")
+
+chart.EfficientFrontier(ef, 
+                        match.col = "StdDev", 
+                        n.portfolios = 25, 
+                        main = "Efficient Frontier")
+```
+Given the correlations observed earlier, it is no surprise that only one stock among Apple, Microsoft, and Google was selected for the optimized portfolio, alongside the two remaining stocks, JPM and XOM.
+
+Reviewing the annualized returns and volatility calculated at the beginning:
+
+AAPL:
+- annualized return: 0.2459
+- volatility: 0.2986
+- Sharpe ratio: 0.8236
+
+MSFT:
+- annualized return:0.1831
+- volatility: 0.2696
+- Sharpe ratio: 0.6793
+
+GOOGL:
+- annualized return:0.1936
+- volatility: 0.3087
+- Sharpe ratio: 0.6270
+
+AAPL’s higher annualized return and Sharpe ratio, compared to its counterparts, explain why it was chosen among the three highly correlated stocks.
+
+
+
+## Risk Contribution Analysis
+
+```{r}
+opt_weights <- as.numeric(opt_weights)
+
+# Portfolio volatility 
+port_volatility <- sqrt(sum(opt_weights * (cov_matrix %*% opt_weights)))
+
+# Risk contribution for each asset
+risk_contrib <- (cov_matrix %*% opt_weights) * opt_weights / port_volatility
+
+# Convert to a data frame
+risk_contrib_df <- data.frame(Asset = colnames(returns), RiskContribution = risk_contrib)
+
+print(risk_contrib_df)
+```
+The risk contribution table can be directly explained by weight allocaton seen above.
+
+
+## Backtesting
+
+```{r}
+benchmark_returns <- Return.portfolio(R = returns,
+                                      weights = equal_weights,
+                                      rebalance_on = "years")
+
+colnames(benchmark_returns) <-"benchmark"
+
+base_port_spec <- port_spec
+
+opt_base <- optimize.portfolio.rebalancing(R = returns,
+                                           optimize_method = "ROI",
+                                           portfolio = base_port_spec,
+                                           rebalance_on = "quarters",
+                                           training_period = 60,
+                                           rolling_window = 60)
+
+base_returns <- Return.portfolio(returns, extractWeights(opt_base))
+colnames(base_returns) <- "base"
+
+chart.Weights(opt_base, main = "Unconstrained Weights")
+
+
+box_port_spec <- port_spec
+
+box_port_spec <- add.constraint(portfolio = box_port_spec,
+                                type = "box",
+                                min = 0.05, max = 0.4,
+                                indexnum = 2)
+
+opt_box = optimize.portfolio.rebalancing(R = returns,
+                                         optimize_method = "ROI",
+                                         portfolio = box_port_spec,
+                                         rebalance_on = "quarters",
+                                         training_period = 60,
+                                         rolling_window = 60)
+
+box_returns <- Return.portfolio(returns, extractWeights(opt_box))
+colnames(box_returns) <- "box"
+
+chart.Weights(opt_box, main = "Box Weights")
+
+
+ret <- cbind(benchmark_returns, base_returns, box_returns)
+
+table.AnnualizedReturns(ret)
+```
+Base Weights: unconstrained optimizer 
+Box Weight: box constraints (min 5%, max 40% per asset)
+
+- The **unconstrained weighted portfolio** shows extreme concentration patterns, often allocating nearly 100% to a single asset. This explains both the higher volatility and lower Sharpe ratio compared to the benchmark.
+
+- The **box weighted portfolio** shows a more balanced distribution among all five assets throughout the period. This results in lower volatility than the base portfolio, improving the Sharpe ratio despite lower returns.
+
+### Key Takeaways
+- **Unconstrained optimization** can lead to extreme, concentrated bets, increasing risk and sometimes reducing risk-adjusted returns.
+- **Box constraints** force diversification, lowering risk and often improving the Sharpe ratio, even if raw returns decrease.
+- **Simple strategies** like equal-weighting can outperform more complex optimization in both return and risk-adjusted terms, especially when optimizer overfit or ignore diversification.
