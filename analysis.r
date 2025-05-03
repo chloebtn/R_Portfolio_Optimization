@@ -144,7 +144,7 @@ box_port_spec <- add.constraint(portfolio = box_port_spec,
                                 min = 0.05, max = 0.4,
                                 indexnum = 2)
 
-opt_box = optimize.portfolio.rebalancing(R = returns,
+opt_box <- optimize.portfolio.rebalancing(R = returns,
                                          optimize_method = "ROI",
                                          portfolio = box_port_spec,
                                          rebalance_on = "quarters",
